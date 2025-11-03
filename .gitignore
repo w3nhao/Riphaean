@@ -97,5 +97,6 @@ ipython_config.py
 ###############################
 results/
 outputs/
+models/
 
 
