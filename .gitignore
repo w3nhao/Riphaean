@@ -99,4 +99,12 @@ results/
 outputs/
 models/
 
+docs/
+papers/
+bash_scripts/
+tests/
+ref_codes/
 
+CLAUDE.md
+
+memory_bank/debug/

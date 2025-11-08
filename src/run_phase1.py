@@ -1,4 +1,6 @@
 # src/run_phase1.py
+# src/run_phase1.py
+import argparse
 import json
 from pathlib import Path
 from tqdm import tqdm
@@ -13,14 +15,20 @@ from extraction.extractor import MemoryExtractor
 class Phase1Experiment:
     """Phase 1: Does retrieval help?"""
     
-    def __init__(self, random_seed: int = 42):
+    def __init__(
+        self,
+        random_seed: int = 42,
+        extraction_thinking_enabled: bool = True,
+        skip_baseline: bool = False,
+    ):
         self.llm = LlamaServerClient()
         self.memory_bank = ReasoningBank()
         self.retriever = MemoryRetriever()
         self.judge = MathJudge(self.llm)
-        self.extractor = MemoryExtractor(self.llm)
+        self.extractor = MemoryExtractor(self.llm, thinking_enabled=extraction_thinking_enabled)
         
         self.random_seed = random_seed
+        self.skip_baseline = skip_baseline
         
         self.results = {
             'baseline': [],
@@ -121,6 +129,17 @@ class Phase1Experiment:
         baseline_ci = self._compute_wilson_ci(baseline_successes, len(self.results['baseline']))
         memory_ci = self._compute_wilson_ci(memory_successes, len(self.results['with_memory']))
         
+        absolute_improvement = memory_acc - baseline_acc if not self.skip_baseline else None
+        if not self.skip_baseline and baseline_acc > 0:
+            relative_improvement = (memory_acc - baseline_acc) / baseline_acc
+        elif self.skip_baseline:
+            relative_improvement = None
+        else:
+            relative_improvement = 0
+
+        confidence_overlap = None if self.skip_baseline else not (memory_ci[0] > baseline_ci[1])
+        statistically_significant = False if self.skip_baseline else memory_ci[0] > baseline_ci[1]
+
         summary = {
             'baseline_accuracy': baseline_acc,
             'baseline_ci_lower': baseline_ci[0],
@@ -128,13 +147,14 @@ class Phase1Experiment:
             'with_memory_accuracy': memory_acc,
             'with_memory_ci_lower': memory_ci[0],
             'with_memory_ci_upper': memory_ci[1],
-            'absolute_improvement': memory_acc - baseline_acc,
-            'relative_improvement': (memory_acc - baseline_acc) / baseline_acc if baseline_acc > 0 else 0,
-            'confidence_intervals_overlap': not (memory_ci[0] > baseline_ci[1]),
-            'statistically_significant': memory_ci[0] > baseline_ci[1],
+            'absolute_improvement': absolute_improvement,
+            'relative_improvement': relative_improvement,
+            'confidence_intervals_overlap': confidence_overlap,
+            'statistically_significant': statistically_significant,
             'memory_bank_size': len(self.memory_bank),
             'problems_tested': len(self.results['baseline']),
-            'random_seed': self.random_seed
+            'random_seed': self.random_seed,
+            'baseline_skipped': self.skip_baseline
         }
         
         with open('results/phase1_summary.json', 'w') as f:
@@ -144,13 +164,24 @@ class Phase1Experiment:
         print("\n" + "="*70)
         print("PHASE 1 RESULTS")
         print("="*70)
-        print(f"Baseline Accuracy:    {baseline_acc:.2%} (95% CI: [{baseline_ci[0]:.2%}, {baseline_ci[1]:.2%}])")
+        if self.skip_baseline:
+            print("Baseline Accuracy:    N/A (baseline skipped)")
+        else:
+            print(f"Baseline Accuracy:    {baseline_acc:.2%} (95% CI: [{baseline_ci[0]:.2%}, {baseline_ci[1]:.2%}])")
         print(f"With Memory Accuracy: {memory_acc:.2%} (95% CI: [{memory_ci[0]:.2%}, {memory_ci[1]:.2%}])")
-        print(f"Absolute Improvement: {summary['absolute_improvement']:+.2%}")
-        print(f"Relative Improvement: {summary['relative_improvement']:+.2%}")
+        if absolute_improvement is None:
+            print("Absolute Improvement: N/A (baseline skipped)")
+        else:
+            print(f"Absolute Improvement: {absolute_improvement:+.2%}")
+        if relative_improvement is None:
+            print("Relative Improvement: N/A (baseline skipped)")
+        else:
+            print(f"Relative Improvement: {relative_improvement:+.2%}")
         print(f"Memory Bank Size:     {len(self.memory_bank)} items")
         print()
-        if summary['statistically_significant']:
+        if self.skip_baseline:
+            print("Baseline run skipped; statistical comparison not available.")
+        elif statistically_significant:
             print("✓ Improvement is statistically significant at 95% confidence")
             print("  (Memory CI lower bound > Baseline CI upper bound)")
         else:
@@ -175,7 +206,33 @@ class Phase1Experiment:
         return (max(0, center - margin), min(1, center + margin))
 
 def main():
-    experiment = Phase1Experiment()
+    parser = argparse.ArgumentParser(description="Phase 1 experiment runner")
+    thinking_group = parser.add_mutually_exclusive_group()
+    thinking_group.add_argument(
+        "--enable-extraction-thinking",
+        dest="extraction_thinking_enabled",
+        action="store_true",
+        help="Allow extractor prompts to include hidden thinking during memory extraction."
+    )
+    thinking_group.add_argument(
+        "--disable-extraction-thinking",
+        dest="extraction_thinking_enabled",
+        action="store_false",
+        help="Force extractor prompts to append /no_think to disable hidden thinking."
+    )
+    parser.set_defaults(extraction_thinking_enabled=True)
+    parser.add_argument(
+        "--skip-baseline",
+        action="store_true",
+        help="Skip the baseline evaluation without memory."
+    )
+
+    args = parser.parse_args()
+
+    experiment = Phase1Experiment(
+        extraction_thinking_enabled=args.extraction_thinking_enabled,
+        skip_baseline=args.skip_baseline
+    )
     
     train_problems = experiment.load_problems('data/train_problems.json')
     test_problems = experiment.load_problems('data/test_problems.json')
@@ -201,7 +258,10 @@ def main():
     
     # Test 1: Baseline WITHOUT memory (no retrieval, no building)
     print("=== Test 1: Baseline WITHOUT memory ===")
-    experiment.run_baseline_without_memory(test_problems, limit=100)
+    if experiment.skip_baseline:
+        print("Skipping baseline run as requested.\n")
+    else:
+        experiment.run_baseline_without_memory(test_problems, limit=100)
     
     # Test 2: WITH memory (with retrieval)
     print("\n=== Test 2: WITH memory ===")

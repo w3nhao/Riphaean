@@ -1,4 +1,5 @@
 # src/memory.py
+# src/memory.py
 import json
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional
@@ -14,6 +15,7 @@ class MemoryItem:
     success: bool
     created_at: str
     embedding: Optional[List[float]] = None
+    placeholder: bool = False
     
     def to_dict(self):
         data = asdict(self)
@@ -21,6 +23,8 @@ class MemoryItem:
     
     @classmethod
     def from_dict(cls, data):
+        if 'placeholder' not in data:
+            data = {**data, 'placeholder': False}
         return cls(**data)
 
 class ReasoningBank:
@@ -30,6 +34,7 @@ class ReasoningBank:
         self.storage_path = storage_path
         self.memories: List[MemoryItem] = []
         self.load()
+        self._prune_placeholders()
     
     def add_memory(self, memory: MemoryItem):
         """Add new memory item"""
@@ -43,7 +48,8 @@ class ReasoningBank:
     
     def get_all_memories(self) -> List[MemoryItem]:
         """Get all memories"""
-        return self.memories
+        self._prune_placeholders()
+        return list(self.memories)
     
     def save(self):
         """Persist to disk"""
@@ -59,6 +65,8 @@ class ReasoningBank:
                 self.memories = [MemoryItem.from_dict(m) for m in data]
         except FileNotFoundError:
             self.memories = []
+        except json.JSONDecodeError:
+            self.memories = []
     
     def clear(self):
         """Clear all memories"""
@@ -66,4 +74,12 @@ class ReasoningBank:
         self.save()
     
     def __len__(self):
+        self._prune_placeholders()
         return len(self.memories)
+
+    def _prune_placeholders(self):
+        """Remove placeholder memories before exposing bank contents."""
+        original_count = len(self.memories)
+        self.memories = [m for m in self.memories if not m.placeholder]
+        if len(self.memories) != original_count:
+            self.save()
